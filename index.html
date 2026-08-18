@@ -324,15 +324,17 @@ main{padding:var(--pad);display:flex;flex-direction:column;gap:16px;flex:1}
       <strong>Nothing caught yet</strong>
       Press <code>START</code>, point your mic at the telly, then hit <code>CATCH THAT</code> when something goes past you and you want to know what it was.<br><br>
       Or turn on <code>AMBIENT</code> and it'll surface things on its own while you watch.<br><br>
-      Needs a mic, Chrome, and an API key — add one under <code>SETUP</code>.<br><br>
+      <span id="needsKey">Needs a mic, Chrome, and an API key — add one under <code>SETUP</code>.<br><br></span>
       The bar next to the status lamp is your input level. If it moves when you talk, the mic is working.
     </div>
   </main>
 
   <div class="panel" id="panel">
     <h3>SETUP</h3>
-    <label for="key">Anthropic API key</label>
-    <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+    <div id="keyRow">
+      <label for="key">Anthropic API key</label>
+      <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+    </div>
     <label for="model">Model</label>
     <select id="model"></select>
     <label for="lang">Listening language</label>
@@ -346,7 +348,7 @@ main{padding:var(--pad);display:flex;flex-direction:column;gap:16px;flex:1}
       <option value="it-IT">Italian</option>
       <option value="ja-JP">Japanese</option>
     </select>
-    <p class="note">Your key is stored in this browser only and sent straight to Anthropic. Nothing is stored on the site, so this is safe to host publicly — every visitor uses their own key.<br><br>
+    <p class="note" id="keyNote">Your key is stored in this browser only and sent straight to Anthropic. Nothing is stored on the site, so this is safe to host publicly — every visitor uses their own key.<br><br>
     Audio never leaves your machine. Chrome turns speech into text locally; only that text is sent.</p>
     <button class="save" id="btnSave">SAVE &amp; CLOSE</button>
   </div>
@@ -365,6 +367,11 @@ main{padding:var(--pad);display:flex;flex-direction:column;gap:16px;flex:1}
    AMBIENT — teletext for whatever's being said around you
    Single file. Deploy anywhere static.
    ══════════════════════════════════════════════════════════ */
+
+/* Set this to your deployed worker URL (see worker/README.md) and the site works
+   for every visitor with no key of their own. Leave it empty and the app behaves
+   exactly as before: each visitor pastes their own key under SETUP. */
+const PROXY_URL = '';
 
 const MODELS = [
   ['claude-haiku-4-5',  'Haiku 4.5 — fastest, cheapest'],
@@ -752,7 +759,7 @@ function parseItems(text){
 
 async function ask(transcript, mode){
   const key = store.get('ambient.key');
-  if (!key){
+  if (!PROXY_URL && !key){
     openPanel();
     showNotice('No API key', 'Paste an Anthropic API key into SETUP and save it, then try again.');
     return;
@@ -762,14 +769,19 @@ async function ask(transcript, mode){
   setStatus('Looking it up', 'think');
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    // with a proxy the key stays on the server, so none of these headers are sent
+    const headers = PROXY_URL
+      ? { 'Content-Type': 'application/json' }
+      : {
+          'Content-Type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        };
+
+    const res = await fetch(PROXY_URL || 'https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
+      headers,
       body: JSON.stringify({
         model: store.get('ambient.model') || DEFAULT_MODEL,
         max_tokens: 1000,
@@ -784,7 +796,9 @@ async function ask(transcript, mode){
         const parsed = JSON.parse(detail);
         if (parsed && parsed.error && parsed.error.message) msg = `${res.status}: ${parsed.error.message}`;
       } catch {}
-      if (res.status === 401) msg = 'That API key was rejected. Check it in SETUP: it should start sk-ant- and belong to a workspace with credit.';
+      if (res.status === 401) msg = PROXY_URL
+        ? 'The service rejected the request. Its API key is missing or invalid, which is a server-side fix.'
+        : 'That API key was rejected. Check it in SETUP: it should start sk-ant- and belong to a workspace with credit.';
       if (res.status === 429) msg = 'Rate limited. Wait a moment, or turn AMBIENT off so it scans less often.';
       showNotice('Lookup failed', msg);
       console.error(detail);
@@ -821,7 +835,7 @@ async function ask(transcript, mode){
 
   } catch (err){
     console.error(err);
-    showNotice('Could not reach the API', 'The request to api.anthropic.com failed. Check your connection, and note that some networks and extensions block it, then press CATCH THAT again.');
+    showNotice('Could not reach the service', `The request to ${PROXY_URL ? 'the lookup service' : 'api.anthropic.com'} failed. Check your connection, and note that some networks and extensions block it, then press CATCH THAT again.`);
   } finally {
     busy = false;
     setStatus(listening ? 'Listening' : 'Off air', listening ? 'live' : null);
@@ -958,7 +972,7 @@ $('btnAmbient').addEventListener('click', () => setAmbient(!ambient));
 $('btnMenu').addEventListener('click', () => $('panel').classList.toggle('open'));
 
 $('btnSave').addEventListener('click', () => {
-  const k = $('key').value.trim();
+  const k = PROXY_URL ? '' : $('key').value.trim();
   if (k) store.set('ambient.key', k);
   store.set('ambient.lang', $('lang').value);
   store.set('ambient.model', $('model').value);
@@ -987,7 +1001,15 @@ document.addEventListener('keydown', e => {
   if (savedKey) $('key').value = savedKey;
   if (savedLang) $('lang').value = savedLang;
   sel.value = MODELS.some(m => m[0] === savedModel) ? savedModel : DEFAULT_MODEL;
-  if (!savedKey) $('panel').classList.add('open');
+
+  if (PROXY_URL){
+    // the key lives on the server, so stop asking for one
+    $('keyRow').style.display = 'none';
+    $('keyNote').textContent = 'Lookups go through this site\u2019s own service, which holds the API key. Nothing of yours is stored or sent anywhere but the transcript text.';
+    $('needsKey').style.display = 'none';
+  } else if (!savedKey){
+    $('panel').classList.add('open');
+  }
 
   if (!(window.SpeechRecognition || window.webkitSpeechRecognition)){
     showNotice('Wrong browser', 'Live transcription needs Chrome or Edge, on desktop or Android. Safari and Firefox do not support it yet.');

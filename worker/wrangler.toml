@@ -1,0 +1,11 @@
+name = "ambient-lookup"
+main = "index.js"
+compatibility_date = "2025-01-01"
+
+# The origins allowed to call this worker. Anything else gets a 403.
+# Without this an open proxy sits in front of your API key.
+[vars]
+ALLOWED_ORIGINS = "https://jamescamera.github.io"
+
+# ANTHROPIC_API_KEY is a secret, never a var. Set it with:
+#   npx wrangler secret put ANTHROPIC_API_KEY
