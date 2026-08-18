@@ -108,6 +108,23 @@ body::after{
 #statusText.live{color:var(--green)}
 #modeText{margin-left:auto;color:var(--yellow)}
 
+/* input level meter — the one honest signal that the mic is actually hearing */
+.meter{
+  width:64px;height:7px;
+  background:#141414;
+  border:1px solid var(--rule);
+  overflow:hidden;
+  flex:none;
+}
+.meter i{
+  display:block;
+  height:100%;width:0;
+  background:var(--green);
+  transition:width .07s linear;
+}
+.meter.hot i{background:var(--yellow)}
+.meter.off{opacity:.3;border-style:dashed}
+
 /* ── live transcript ticker ───────────────────────────────── */
 .ticker{
   display:flex;
@@ -293,6 +310,7 @@ main{padding:var(--pad);display:flex;flex-direction:column;gap:16px;flex:1}
   <div class="status-strip">
     <span class="lamp" id="lamp"></span>
     <span id="statusText">Off air</span>
+    <span class="meter" id="meter" title="Microphone input level"><i></i></span>
     <span id="modeText">Catch mode</span>
   </div>
 
@@ -306,7 +324,8 @@ main{padding:var(--pad);display:flex;flex-direction:column;gap:16px;flex:1}
       <strong>Nothing caught yet</strong>
       Press <code>START</code>, point your mic at the telly, then hit <code>CATCH THAT</code> when something goes past you and you want to know what it was.<br><br>
       Or turn on <code>AMBIENT</code> and it'll surface things on its own while you watch.<br><br>
-      Needs a mic, Chrome, and an API key — add one under <code>SETUP</code>.
+      Needs a mic, Chrome, and an API key — add one under <code>SETUP</code>.<br><br>
+      The bar next to the status lamp is your input level. If it moves when you talk, the mic is working.
     </div>
   </main>
 
@@ -314,6 +333,8 @@ main{padding:var(--pad);display:flex;flex-direction:column;gap:16px;flex:1}
     <h3>SETUP</h3>
     <label for="key">Anthropic API key</label>
     <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+    <label for="model">Model</label>
+    <select id="model"></select>
     <label for="lang">Listening language</label>
     <select id="lang">
       <option value="en-GB">English (UK)</option>
@@ -345,11 +366,17 @@ main{padding:var(--pad);display:flex;flex-direction:column;gap:16px;flex:1}
    Single file. Deploy anywhere static.
    ══════════════════════════════════════════════════════════ */
 
-const MODEL          = 'claude-haiku-4-5-20251001'; // swap for a bigger model if you want richer cards
+const MODELS = [
+  ['claude-haiku-4-5',  'Haiku 4.5 — fastest, cheapest'],
+  ['claude-sonnet-5',   'Sonnet 5 — balanced'],
+  ['claude-opus-5',     'Opus 5 — richest pages']
+];
+const DEFAULT_MODEL  = 'claude-haiku-4-5';
 const BUFFER_SECONDS = 120;   // how much transcript we keep in memory
 const CATCH_WINDOW   = 25;    // seconds of transcript a CATCH THAT press looks back over
 const AMBIENT_EVERY  = 20000; // ms between ambient scans
 const AMBIENT_MIN    = 60;    // min new characters before an ambient scan is worth making
+const WATCHDOG_MS    = 15000; // how long we wait before explaining why nothing is coming through
 
 const $ = id => document.getElementById(id);
 const feed = $('feed');
@@ -359,10 +386,23 @@ let listening = false;
 let ambient = false;
 let busy = false;
 let buffer = [];            // {t, text}
+let interimText = '';       // the not-yet-final tail, kept so CATCH THAT can see it
 let seen = new Set();       // lowercased terms already shown
 let pageNo = 100;
 let ambientCursor = 0;      // index into buffer already scanned ambiently
 let ambientTimer = null;
+
+/* mic + diagnostics */
+let micStream = null;
+let audioCtx = null;
+let analyser = null;
+let meterRAF = null;
+let sawAudio = false;       // has the input meter ever moved?
+let meterYielded = false;   // meter surrendered the mic, so it can no longer vouch for it
+let gotAnyFinal = false;    // has anything at all been transcribed this session?
+let restarts = [];          // timestamps of recogniser restarts, for the circuit breaker
+let networkErrors = 0;
+let watchdog = null;
 
 const KIND_COLOUR = {
   person:  'var(--yellow)',
@@ -407,27 +447,117 @@ function pushFinal(text){
   while (buffer.length && buffer[0].t < cutoff){ buffer.shift(); ambientCursor = Math.max(0, ambientCursor - 1); }
 }
 
+/* CATCH THAT fires mid-sentence, so the tail is usually still interim.
+   Including it here is the difference between a page and "Heard nothing". */
 function textSince(seconds){
   const cutoff = Date.now() - seconds * 1000;
-  return buffer.filter(b => b.t >= cutoff).map(b => b.text).join(' ');
+  const parts = buffer.filter(b => b.t >= cutoff).map(b => b.text);
+  if (interimText.trim()) parts.push(interimText.trim());
+  return parts.join(' ');
 }
 
 function newAmbientText(){
-  const slice = buffer.slice(ambientCursor);
-  return slice.map(b => b.text).join(' ');
+  return buffer.slice(ambientCursor).map(b => b.text).join(' ');
 }
 
-function paintTicker(interim){
+function paintTicker(){
   const recent = buffer.slice(-4).map(b => b.text).join(' ');
   const el = $('tickerText');
-  if (!recent && !interim){ el.textContent = '—'; return; }
+  if (!recent && !interimText){ el.textContent = '—'; return; }
   el.innerHTML = '';
   if (recent) el.append(document.createTextNode(recent + ' '));
-  if (interim){
+  if (interimText){
     const s = document.createElement('span');
     s.className = 'fresh';
-    s.textContent = interim;
+    s.textContent = interimText;
     el.append(s);
+  }
+}
+
+/* ── microphone: permission, and a level meter that proves it works ──
+   The meter is the whole diagnostic. If it moves, the mic is fine and any
+   remaining problem is the speech service. If it does not, it is the mic. */
+function ensureAudioCtx(){
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!audioCtx) audioCtx = new AC();
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+}
+
+async function openMic(){
+  if (micStream) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    throw Object.assign(new Error('getUserMedia unavailable'), { name: 'NotSupportedError' });
+  }
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
+  });
+  startMeter();
+}
+
+function startMeter(){
+  ensureAudioCtx();
+  if (!audioCtx || !micStream) return;
+  try {
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    audioCtx.createMediaStreamSource(micStream).connect(analyser);
+  } catch { analyser = null; return; }
+
+  const bar = $('meter').firstElementChild;
+  const data = new Uint8Array(analyser.fftSize);
+  const step = () => {
+    if (!analyser) return;
+    analyser.getByteTimeDomainData(data);
+    let peak = 0;
+    for (let i = 0; i < data.length; i++){
+      const v = Math.abs(data[i] - 128);
+      if (v > peak) peak = v;
+    }
+    const level = Math.min(1, peak / 40);     // ~40/128 reads as ordinary speech
+    if (level > 0.12) sawAudio = true;
+    bar.style.width = (level * 100).toFixed(0) + '%';
+    $('meter').classList.toggle('hot', level > 0.85);
+    meterRAF = requestAnimationFrame(step);
+  };
+  step();
+}
+
+function stopMeter(){
+  if (meterRAF) cancelAnimationFrame(meterRAF);
+  meterRAF = null;
+  analyser = null;
+  $('meter').firstElementChild.style.width = '0';
+  $('meter').classList.remove('hot');
+}
+
+/* Some setups only allow one capture at a time. If the recogniser and the meter
+   collide, the meter loses — but then it can no longer vouch for the microphone,
+   so record that and stop drawing conclusions from it. */
+function yieldMeter(){
+  meterYielded = true;
+  $('meter').classList.add('off');
+  $('meter').title = 'Meter off: the recogniser has sole use of the microphone';
+}
+
+function closeMic(){
+  stopMeter();
+  if (micStream){ micStream.getTracks().forEach(t => { try { t.stop(); } catch {} }); }
+  micStream = null;
+}
+
+function micFailure(err){
+  const name = err && err.name;
+  if (name === 'NotAllowedError' || name === 'SecurityError'){
+    showNotice('Mic blocked', 'The browser refused microphone access. Tap the padlock (or the tune icon) left of the address bar, allow Microphone, reload the page, then press START.');
+  } else if (name === 'NotFoundError' || name === 'OverconstrainedError'){
+    showNotice('No microphone', 'No input device was found. Plug one in, or grant access to the right one, then press START again.');
+  } else if (name === 'NotReadableError' || name === 'AbortError'){
+    showNotice('Mic already in use', 'Another app or browser tab is holding the microphone. Close it and press START again.');
+  } else if (name === 'NotSupportedError'){
+    showNotice('No mic API', 'This browser does not expose getUserMedia, so the page cannot open a microphone at all.');
+  } else {
+    showNotice('Could not open the mic', String((err && err.message) || err));
   }
 }
 
@@ -436,7 +566,7 @@ function buildRecogniser(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return null;
   const r = new SR();
-  r.continuous = true;
+  r.continuous = true;        // ignored on Android Chrome, where the onend restart covers it
   r.interimResults = true;
   r.lang = $('lang').value;
 
@@ -444,42 +574,146 @@ function buildRecogniser(){
     let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++){
       const res = e.results[i];
-      if (res.isFinal) pushFinal(res[0].transcript);
-      else interim += res[0].transcript;
+      if (res.isFinal){
+        pushFinal(res[0].transcript);
+        gotAnyFinal = true;
+        networkErrors = 0;
+        restarts = [];          // it is working, so the circuit breaker starts over
+        clearTimeout(watchdog);
+      } else {
+        interim += res[0].transcript;
+      }
     }
-    paintTicker(interim);
+    interimText = interim;
+    paintTicker();
   };
 
   r.onerror = e => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed'){
-      stopListening();
-      showNotice('Mic blocked', 'Chrome is refusing microphone access. Allow it in the address-bar padlock, then press START again.');
-    } else if (e.error === 'no-speech'){
-      /* normal on a quiet room — the onend handler restarts us */
+    switch (e.error){
+      case 'not-allowed':
+      case 'service-not-allowed':
+        stopListening();
+        showNotice('Mic blocked', 'The browser refused microphone access to the recogniser. Allow Microphone via the padlock in the address bar, reload, then press START.');
+        break;
+
+      case 'audio-capture':
+        // our own level meter is probably holding the only capture slot, so yield it
+        // and let onend restart us — transcription matters more than the meter
+        if (micStream){
+          closeMic();
+          yieldMeter();
+        } else {
+          stopListening();
+          showNotice('No audio', 'The recogniser could not open the microphone. Check the device is connected, not muted, and not held by another app.');
+        }
+        break;
+
+      case 'network':
+        // the usual cause of a live mic that transcribes nothing
+        networkErrors++;
+        if (networkErrors >= 2){
+          stopListening();
+          showNotice('Speech service unreachable', 'Chrome does not transcribe on-device, it streams the audio to an online speech service, and it cannot reach it. Check your connection, and any VPN, private DNS or content blocker, then press START again.');
+        }
+        break;
+
+      case 'no-speech':
+      case 'aborted':
+        break;                  // routine in a quiet room; onend restarts us
+
+      default:
+        showNotice('Recogniser error', `Speech recognition reported "${e.error}". Press START again, or reload if it keeps happening.`);
     }
   };
 
-  r.onend = () => { if (listening) { try { r.start(); } catch {} } };
+  r.onend = () => {
+    if (!listening) return;
+    const now = Date.now();
+    restarts = restarts.filter(t => now - t < 10000);
+    restarts.push(now);
+    if (restarts.length > 8 && !gotAnyFinal){
+      stopListening();
+      showNotice('Recogniser keeps dropping out', 'Speech recognition restarted eight times in ten seconds without transcribing a word. That is almost always a blocked or unreachable speech service rather than your microphone.');
+      return;
+    }
+    setTimeout(() => { if (listening){ try { r.start(); } catch {} } }, 250);
+  };
+
   return r;
 }
 
-function startListening(){
-  if (!recog) recog = buildRecogniser();
-  if (!recog){
-    showNotice('Wrong browser', 'Live transcription needs Chrome or Edge on desktop or Android. Safari and Firefox do not support it yet.');
+function armWatchdog(){
+  clearTimeout(watchdog);
+  watchdog = setTimeout(() => {
+    if (!listening || gotAnyFinal) return;
+    if (sawAudio){
+      showNotice('Sound, but no words', 'The input meter is moving, so the microphone is working, but nothing has come back transcribed. Chrome does not transcribe on-device; it needs to reach an online speech service, and a VPN, private DNS or offline connection will stop it.');
+    } else if (meterYielded){
+      showNotice('Nothing transcribed yet', 'The mic is open but no words have come back. Chrome does not transcribe on-device; it needs to reach an online speech service, and a VPN, private DNS or offline connection will stop it.');
+    } else {
+      showNotice('Mic is silent', 'Fifteen seconds and the input meter has not moved. The microphone is open but hearing nothing. Check it is unmuted, that the browser got the device you expected, and move it nearer the speaker.');
+    }
+  }, WATCHDOG_MS);
+}
+
+async function startListening(){
+  if (!(window.SpeechRecognition || window.webkitSpeechRecognition)){
+    showNotice('Wrong browser', 'Live transcription needs Chrome or Edge, on desktop or Android. Safari and Firefox do not support it yet.');
     return;
   }
+  if (!window.isSecureContext){
+    showNotice('Needs HTTPS', 'Browsers only hand out the microphone over https:// or on localhost. Open the page over HTTPS and try again.');
+    return;
+  }
+
+  $('btnListen').disabled = true;
+  try {
+    await openMic();                       // asks for permission up front, with a real error if refused
+  } catch (err){
+    $('btnListen').disabled = false;
+    micFailure(err);
+    return;
+  }
+  $('btnListen').disabled = false;
+
+  if (!recog) recog = buildRecogniser();
   recog.lang = $('lang').value;
-  try { recog.start(); } catch {}
+
+  sawAudio = false;
+  meterYielded = false;
+  $('meter').classList.remove('off');
+  $('meter').title = 'Microphone input level';
+  gotAnyFinal = false;
+  networkErrors = 0;
+  restarts = [];
   listening = true;
+
+  try {
+    recog.start();
+  } catch (err){
+    // an already-started recogniser throws and is harmless; anything else means we are not live
+    if (!/already/i.test(String(err && err.message))){
+      listening = false;
+      closeMic();
+      showNotice('Could not start listening', String((err && err.message) || err));
+      return;
+    }
+  }
+
   $('btnListen').classList.add('active');
   $('btnListen').firstElementChild.textContent = 'STOP';
   setStatus('Listening', 'live');
+  armWatchdog();
 }
 
 function stopListening(){
   listening = false;
+  clearTimeout(watchdog);
   if (recog) { try { recog.stop(); } catch {} }
+  closeMic();
+  interimText = '';
+  paintTicker();
+  $('btnListen').disabled = false;
   $('btnListen').classList.remove('active');
   $('btnListen').firstElementChild.textContent = 'START';
   setStatus('Off air', null);
@@ -508,6 +742,14 @@ TRANSCRIPT:
 """${transcript}"""`;
 }
 
+/* the model sometimes wraps the array in a sentence, so take the array and ignore the rest */
+function parseItems(text){
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start === -1 || end <= start) return null;
+  try { return JSON.parse(text.slice(start, end + 1)); } catch { return null; }
+}
+
 async function ask(transcript, mode){
   const key = store.get('ambient.key');
   if (!key){
@@ -529,7 +771,7 @@ async function ask(transcript, mode){
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: store.get('ambient.model') || DEFAULT_MODEL,
         max_tokens: 1000,
         messages: [{ role: 'user', content: buildPrompt(transcript, mode) }]
       })
@@ -538,8 +780,12 @@ async function ask(transcript, mode){
     if (!res.ok){
       const detail = await res.text();
       let msg = `The API returned ${res.status}.`;
-      if (res.status === 401) msg = 'That API key was rejected. Check it in SETUP.';
-      if (res.status === 429) msg = 'Rate limited. Wait a moment, or slow down ambient scanning.';
+      try {
+        const parsed = JSON.parse(detail);
+        if (parsed && parsed.error && parsed.error.message) msg = `${res.status}: ${parsed.error.message}`;
+      } catch {}
+      if (res.status === 401) msg = 'That API key was rejected. Check it in SETUP: it should start sk-ant- and belong to a workspace with credit.';
+      if (res.status === 429) msg = 'Rate limited. Wait a moment, or turn AMBIENT off so it scans less often.';
       showNotice('Lookup failed', msg);
       console.error(detail);
       return;
@@ -550,13 +796,14 @@ async function ask(transcript, mode){
       .filter(b => b.type === 'text')
       .map(b => b.text)
       .join('\n')
-      .replace(/```json|```/g, '')
       .trim();
 
-    let items;
-    try { items = JSON.parse(text); }
-    catch { console.error('Unparseable reply:', text); return; }
-    if (!Array.isArray(items)) return;
+    const items = parseItems(text);
+    if (!Array.isArray(items)){
+      console.error('Unparseable reply:', text);
+      if (mode === 'catch') showNotice('Garbled reply', 'The model did not return a readable page. Press CATCH THAT again.');
+      return;
+    }
 
     let added = 0;
     for (const item of items){
@@ -574,7 +821,7 @@ async function ask(transcript, mode){
 
   } catch (err){
     console.error(err);
-    showNotice('Could not reach the API', 'Check your connection, then press CATCH THAT again.');
+    showNotice('Could not reach the API', 'The request to api.anthropic.com failed. Check your connection, and note that some networks and extensions block it, then press CATCH THAT again.');
   } finally {
     busy = false;
     setStatus(listening ? 'Listening' : 'Off air', listening ? 'live' : null);
@@ -628,10 +875,29 @@ function renderCard(item){
   card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+/* repeating a notice tells you nothing the first one didn't, so count it instead */
 function showNotice(title, body){
   clearEmpty();
+  const sig = title + ' ' + body;
+  const top = feed.firstElementChild;
+
+  if (top && top.dataset.sig === sig){
+    const n = (Number(top.dataset.count) || 1) + 1;
+    top.dataset.count = n;
+    let tag = top.querySelector('.rep');
+    if (!tag){
+      tag = document.createElement('span');
+      tag.className = 'flag rep';
+      top.querySelector('.meta').appendChild(tag);
+    }
+    tag.textContent = 'x' + n;
+    return;
+  }
+
   const n = document.createElement('article');
   n.className = 'card';
+  n.dataset.sig = sig;
+  n.dataset.count = '1';
   n.style.setProperty('--kc', 'var(--red)');
   n.innerHTML = `<div class="meta"><span class="pno">!</span><span class="kind">notice</span></div>
                  <h2>${escapeHtml(title)}</h2><p class="why">${escapeHtml(body)}</p>`;
@@ -649,6 +915,7 @@ function setAmbient(on){
   $('modeText').textContent = on ? 'Ambient mode' : 'Catch mode';
   clearInterval(ambientTimer);
   if (on){
+    if (!listening) showNotice('Ambient is armed', 'Nothing will surface until the mic is on. Press START.');
     ambientCursor = buffer.length;
     ambientTimer = setInterval(() => {
       if (busy || !listening) return;
@@ -664,15 +931,23 @@ function setAmbient(on){
 function openPanel(){ $('panel').classList.add('open'); $('key').focus(); }
 
 /* ── wiring ───────────────────────────────────────────────── */
-$('btnListen').addEventListener('click', () => listening ? stopListening() : startListening());
+$('btnListen').addEventListener('click', () => {
+  if (listening){ stopListening(); return; }
+  ensureAudioCtx();          // must happen inside the gesture, before any await
+  startListening();
+});
 
 $('btnCatch').addEventListener('click', () => {
   if (busy) return;
   const text = textSince(CATCH_WINDOW);
   if (!text){
-    showNotice('Heard nothing', listening
-      ? 'The mic is on but nothing has been transcribed yet. Move closer to the speaker or turn it up.'
-      : 'Press START first, then catch things as they go past.');
+    if (!listening){
+      showNotice('Heard nothing', 'Press START first, then catch things as they go past.');
+    } else if (!sawAudio && !meterYielded){
+      showNotice('Heard nothing', 'The mic is on but the input meter has not moved at all, so it is not picking up any sound. Check the mic is unmuted and pointed at the speaker.');
+    } else {
+      showNotice('Heard nothing', 'The mic is picking up sound but nothing has come back as text. Chrome sends audio to an online speech service to transcribe it; if that is blocked, the meter still moves and no words ever arrive.');
+    }
     return;
   }
   ask(text, 'catch');
@@ -686,6 +961,7 @@ $('btnSave').addEventListener('click', () => {
   const k = $('key').value.trim();
   if (k) store.set('ambient.key', k);
   store.set('ambient.lang', $('lang').value);
+  store.set('ambient.model', $('model').value);
   if (recog) recog.lang = $('lang').value;
   $('panel').classList.remove('open');
 });
@@ -698,14 +974,25 @@ document.addEventListener('keydown', e => {
 
 /* ── boot ─────────────────────────────────────────────────── */
 (function init(){
+  const sel = $('model');
+  for (const [id, label] of MODELS){
+    const o = document.createElement('option');
+    o.value = id; o.textContent = label;
+    sel.appendChild(o);
+  }
+
   const savedKey = store.get('ambient.key');
   const savedLang = store.get('ambient.lang');
+  const savedModel = store.get('ambient.model');
   if (savedKey) $('key').value = savedKey;
   if (savedLang) $('lang').value = savedLang;
+  sel.value = MODELS.some(m => m[0] === savedModel) ? savedModel : DEFAULT_MODEL;
   if (!savedKey) $('panel').classList.add('open');
 
   if (!(window.SpeechRecognition || window.webkitSpeechRecognition)){
     showNotice('Wrong browser', 'Live transcription needs Chrome or Edge, on desktop or Android. Safari and Firefox do not support it yet.');
+  } else if (!window.isSecureContext){
+    showNotice('Needs HTTPS', 'Browsers only hand out the microphone over https:// or on localhost.');
   }
 })();
 </script>
