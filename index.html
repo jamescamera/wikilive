@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AMBIENT — P100</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --black:#000000;
+  --white:#EDEDED;
+  --yellow:#FFD400;
+  --cyan:#00E5E5;
+  --green:#22DD55;
+  --magenta:#FF4FD8;
+  --red:#FF3B30;
+  --blue:#3D7BFF;
+  --dim:#6A6A6A;
+  --rule:#242424;
+  --pad:clamp(12px,3vw,22px);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+
+html,body{height:100%}
+
+body{
+  background:var(--black);
+  color:var(--white);
+  font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:15px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+
+/* faint scanline wash — the only decoration, and it earns its place */
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  background:repeating-linear-gradient(to bottom,rgba(255,255,255,.028) 0 1px,transparent 1px 3px);
+  z-index:50;
+}
+
+.tv{
+  min-height:100%;
+  display:flex;
+  flex-direction:column;
+  padding-bottom:96px;
+}
+
+/* ── header row ───────────────────────────────────────────── */
+.tt-header{
+  display:flex;
+  align-items:baseline;
+  gap:var(--pad);
+  padding:var(--pad);
+  border-bottom:2px solid var(--rule);
+  flex-wrap:wrap;
+}
+.tt-header .pg{
+  font-family:'Silkscreen',monospace;
+  color:var(--black);
+  background:var(--yellow);
+  padding:3px 7px 2px;
+  font-size:13px;
+  letter-spacing:.05em;
+}
+.tt-header .brand{
+  font-family:'Silkscreen',monospace;
+  font-weight:700;
+  font-size:clamp(18px,5vw,26px);
+  letter-spacing:.14em;
+  color:var(--cyan);
+  margin-right:auto;
+}
+.tt-header .clock{
+  color:var(--dim);
+  font-size:13px;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+
+/* ── status strip ─────────────────────────────────────────── */
+.status-strip{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:9px var(--pad);
+  border-bottom:1px solid var(--rule);
+  font-size:12px;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+}
+.lamp{
+  width:9px;height:9px;
+  border-radius:50%;
+  background:var(--dim);
+  flex:none;
+}
+.lamp.on{background:var(--green);box-shadow:0 0 9px var(--green)}
+.lamp.think{background:var(--yellow);box-shadow:0 0 9px var(--yellow)}
+#statusText{color:var(--dim)}
+#statusText.live{color:var(--green)}
+#modeText{margin-left:auto;color:var(--yellow)}
+
+/* ── live transcript ticker ───────────────────────────────── */
+.ticker{
+  display:flex;
+  gap:10px;
+  align-items:flex-start;
+  padding:11px var(--pad);
+  border-bottom:1px solid var(--rule);
+  min-height:44px;
+  background:#070707;
+}
+.ticker-label{
+  font-family:'Silkscreen',monospace;
+  font-size:10px;
+  color:var(--black);
+  background:var(--dim);
+  padding:3px 5px 2px;
+  flex:none;
+  letter-spacing:.05em;
+}
+#tickerText{
+  color:var(--dim);
+  font-size:13px;
+  line-height:1.45;
+  overflow:hidden;
+  display:-webkit-box;
+  -webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+}
+#tickerText .fresh{color:var(--white)}
+
+/* ── feed ─────────────────────────────────────────────────── */
+main{padding:var(--pad);display:flex;flex-direction:column;gap:16px;flex:1}
+
+.empty{
+  border:1px dashed var(--rule);
+  padding:26px var(--pad);
+  color:var(--dim);
+  font-size:14px;
+  max-width:52ch;
+}
+.empty strong{
+  display:block;
+  font-family:'Silkscreen',monospace;
+  color:var(--white);
+  font-size:14px;
+  letter-spacing:.08em;
+  margin-bottom:12px;
+}
+.empty code{color:var(--yellow)}
+
+.card{
+  border-left:4px solid var(--kc,var(--white));
+  background:#0B0B0B;
+  padding:13px 15px 15px;
+  max-width:70ch;
+}
+.card .meta{
+  display:flex;
+  align-items:center;
+  gap:9px;
+  margin-bottom:7px;
+  font-size:11px;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+}
+.card .pno{
+  font-family:'Silkscreen',monospace;
+  background:var(--kc,var(--white));
+  color:var(--black);
+  padding:3px 5px 2px;
+  font-size:10px;
+}
+.card .kind{color:var(--kc,var(--white))}
+.card .flag{color:var(--red);margin-left:auto;letter-spacing:.08em}
+.card h2{
+  font-family:'IBM Plex Mono',monospace;
+  font-weight:700;
+  font-size:clamp(17px,4.4vw,21px);
+  letter-spacing:.02em;
+  color:var(--kc,var(--white));
+  margin-bottom:7px;
+  line-height:1.25;
+}
+.card p{margin-bottom:6px}
+.card .why{color:var(--dim);font-size:13.5px}
+.card:last-child{margin-bottom:4px}
+
+/* teletext paint-in */
+.line{opacity:0;animation:paint .16s steps(4,end) forwards}
+@keyframes paint{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}
+
+/* ── setup panel ──────────────────────────────────────────── */
+.panel{
+  display:none;
+  margin:0 var(--pad) var(--pad);
+  border:1px solid var(--blue);
+  padding:15px;
+  max-width:70ch;
+}
+.panel.open{display:block}
+.panel h3{
+  font-family:'Silkscreen',monospace;
+  font-size:12px;
+  color:var(--blue);
+  letter-spacing:.1em;
+  margin-bottom:11px;
+}
+.panel label{display:block;font-size:12px;color:var(--dim);margin:12px 0 5px;letter-spacing:.06em;text-transform:uppercase}
+.panel input,.panel select{
+  width:100%;
+  background:var(--black);
+  border:1px solid var(--rule);
+  color:var(--white);
+  font-family:inherit;
+  font-size:14px;
+  padding:9px 10px;
+}
+.panel input:focus,.panel select:focus{outline:2px solid var(--blue);outline-offset:1px;border-color:var(--blue)}
+.panel .note{font-size:12.5px;color:var(--dim);margin-top:13px;line-height:1.5}
+.panel .save{
+  margin-top:14px;
+  background:var(--blue);
+  color:var(--black);
+  border:0;
+  font-family:'Silkscreen',monospace;
+  font-size:12px;
+  padding:10px 15px;
+  cursor:pointer;
+  letter-spacing:.06em;
+}
+
+/* ── fastext bar ──────────────────────────────────────────── */
+.fastext{
+  position:fixed;
+  left:0;right:0;bottom:0;
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  border-top:2px solid var(--rule);
+  background:var(--black);
+  z-index:20;
+  padding-bottom:env(safe-area-inset-bottom);
+}
+.fastext button{
+  appearance:none;
+  border:0;
+  border-top:5px solid currentColor;
+  background:#0A0A0A;
+  color:var(--white);
+  font-family:'Silkscreen',monospace;
+  font-size:clamp(9px,2.5vw,11px);
+  letter-spacing:.05em;
+  padding:17px 4px;
+  cursor:pointer;
+  transition:background .12s;
+}
+.fastext button span{color:var(--white);display:block}
+.fastext button:hover{background:#161616}
+.fastext button:focus-visible{outline:2px solid var(--white);outline-offset:-4px}
+.fastext button:disabled{opacity:.35;cursor:not-allowed}
+#btnListen{color:var(--red)}
+#btnCatch{color:var(--green)}
+#btnAmbient{color:var(--yellow)}
+#btnMenu{color:var(--blue)}
+#btnAmbient.active span,#btnListen.active span{color:var(--black)}
+#btnAmbient.active{background:var(--yellow)}
+#btnListen.active{background:var(--red)}
+
+@media (prefers-reduced-motion:reduce){
+  .line{animation:none;opacity:1}
+  body::after{display:none}
+}
+</style>
+</head>
+<body>
+<div class="tv">
+
+  <header class="tt-header">
+    <span class="pg">P100</span>
+    <span class="brand">AMBIENT</span>
+    <span class="clock" id="clock">—</span>
+  </header>
+
+  <div class="status-strip">
+    <span class="lamp" id="lamp"></span>
+    <span id="statusText">Off air</span>
+    <span id="modeText">Catch mode</span>
+  </div>
+
+  <div class="ticker">
+    <span class="ticker-label">HEARING</span>
+    <span id="tickerText">—</span>
+  </div>
+
+  <main id="feed">
+    <div class="empty" id="empty">
+      <strong>Nothing caught yet</strong>
+      Press <code>START</code>, point your mic at the telly, then hit <code>CATCH THAT</code> when something goes past you and you want to know what it was.<br><br>
+      Or turn on <code>AMBIENT</code> and it'll surface things on its own while you watch.<br><br>
+      Needs a mic, Chrome, and an API key — add one under <code>SETUP</code>.
+    </div>
+  </main>
+
+  <div class="panel" id="panel">
+    <h3>SETUP</h3>
+    <label for="key">Anthropic API key</label>
+    <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+    <label for="lang">Listening language</label>
+    <select id="lang">
+      <option value="en-GB">English (UK)</option>
+      <option value="en-US">English (US)</option>
+      <option value="en-IE">English (Ireland)</option>
+      <option value="fr-FR">French</option>
+      <option value="de-DE">German</option>
+      <option value="es-ES">Spanish</option>
+      <option value="it-IT">Italian</option>
+      <option value="ja-JP">Japanese</option>
+    </select>
+    <p class="note">Your key is stored in this browser only and sent straight to Anthropic. Nothing is stored on the site, so this is safe to host publicly — every visitor uses their own key.<br><br>
+    Audio never leaves your machine. Chrome turns speech into text locally; only that text is sent.</p>
+    <button class="save" id="btnSave">SAVE &amp; CLOSE</button>
+  </div>
+
+  <nav class="fastext">
+    <button id="btnListen"><span>START</span></button>
+    <button id="btnCatch"><span>CATCH THAT</span></button>
+    <button id="btnAmbient"><span>AMBIENT</span></button>
+    <button id="btnMenu"><span>SETUP</span></button>
+  </nav>
+
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════
+   AMBIENT — teletext for whatever's being said around you
+   Single file. Deploy anywhere static.
+   ══════════════════════════════════════════════════════════ */
+
+const MODEL          = 'claude-haiku-4-5-20251001'; // swap for a bigger model if you want richer cards
+const BUFFER_SECONDS = 120;   // how much transcript we keep in memory
+const CATCH_WINDOW   = 25;    // seconds of transcript a CATCH THAT press looks back over
+const AMBIENT_EVERY  = 20000; // ms between ambient scans
+const AMBIENT_MIN    = 60;    // min new characters before an ambient scan is worth making
+
+const $ = id => document.getElementById(id);
+const feed = $('feed');
+
+let recog = null;
+let listening = false;
+let ambient = false;
+let busy = false;
+let buffer = [];            // {t, text}
+let seen = new Set();       // lowercased terms already shown
+let pageNo = 100;
+let ambientCursor = 0;      // index into buffer already scanned ambiently
+let ambientTimer = null;
+
+const KIND_COLOUR = {
+  person:  'var(--yellow)',
+  place:   'var(--cyan)',
+  work:    'var(--green)',
+  concept: 'var(--magenta)',
+  event:   'var(--white)',
+  thing:   'var(--white)'
+};
+
+/* ── storage (degrades quietly if blocked) ────────────────── */
+const store = {
+  get(k){ try { return localStorage.getItem(k); } catch { return null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch {} }
+};
+
+/* ── clock, teletext style ────────────────────────────────── */
+function tickClock(){
+  const d = new Date();
+  const days = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
+  const mons = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  const p = n => String(n).padStart(2,'0');
+  $('clock').textContent =
+    `${days[d.getDay()]} ${p(d.getDate())} ${mons[d.getMonth()]} ${p(d.getHours())}:${p(d.getMinutes())}/${p(d.getSeconds())}`;
+}
+setInterval(tickClock, 1000); tickClock();
+
+/* ── status ───────────────────────────────────────────────── */
+function setStatus(text, state){
+  $('statusText').textContent = text;
+  $('statusText').classList.toggle('live', state === 'live');
+  const lamp = $('lamp');
+  lamp.className = 'lamp' + (state === 'live' ? ' on' : state === 'think' ? ' think' : '');
+}
+
+/* ── transcript buffer ────────────────────────────────────── */
+function pushFinal(text){
+  const clean = text.trim();
+  if (!clean) return;
+  buffer.push({ t: Date.now(), text: clean });
+  const cutoff = Date.now() - BUFFER_SECONDS * 1000;
+  while (buffer.length && buffer[0].t < cutoff){ buffer.shift(); ambientCursor = Math.max(0, ambientCursor - 1); }
+}
+
+function textSince(seconds){
+  const cutoff = Date.now() - seconds * 1000;
+  return buffer.filter(b => b.t >= cutoff).map(b => b.text).join(' ');
+}
+
+function newAmbientText(){
+  const slice = buffer.slice(ambientCursor);
+  return slice.map(b => b.text).join(' ');
+}
+
+function paintTicker(interim){
+  const recent = buffer.slice(-4).map(b => b.text).join(' ');
+  const el = $('tickerText');
+  if (!recent && !interim){ el.textContent = '—'; return; }
+  el.innerHTML = '';
+  if (recent) el.append(document.createTextNode(recent + ' '));
+  if (interim){
+    const s = document.createElement('span');
+    s.className = 'fresh';
+    s.textContent = interim;
+    el.append(s);
+  }
+}
+
+/* ── speech recognition ───────────────────────────────────── */
+function buildRecogniser(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  const r = new SR();
+  r.continuous = true;
+  r.interimResults = true;
+  r.lang = $('lang').value;
+
+  r.onresult = e => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++){
+      const res = e.results[i];
+      if (res.isFinal) pushFinal(res[0].transcript);
+      else interim += res[0].transcript;
+    }
+    paintTicker(interim);
+  };
+
+  r.onerror = e => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      stopListening();
+      showNotice('Mic blocked', 'Chrome is refusing microphone access. Allow it in the address-bar padlock, then press START again.');
+    } else if (e.error === 'no-speech'){
+      /* normal on a quiet room — the onend handler restarts us */
+    }
+  };
+
+  r.onend = () => { if (listening) { try { r.start(); } catch {} } };
+  return r;
+}
+
+function startListening(){
+  if (!recog) recog = buildRecogniser();
+  if (!recog){
+    showNotice('Wrong browser', 'Live transcription needs Chrome or Edge on desktop or Android. Safari and Firefox do not support it yet.');
+    return;
+  }
+  recog.lang = $('lang').value;
+  try { recog.start(); } catch {}
+  listening = true;
+  $('btnListen').classList.add('active');
+  $('btnListen').firstElementChild.textContent = 'STOP';
+  setStatus('Listening', 'live');
+}
+
+function stopListening(){
+  listening = false;
+  if (recog) { try { recog.stop(); } catch {} }
+  $('btnListen').classList.remove('active');
+  $('btnListen').firstElementChild.textContent = 'START';
+  setStatus('Off air', null);
+}
+
+/* ── the API call ─────────────────────────────────────────── */
+function buildPrompt(transcript, mode){
+  const focus = mode === 'catch'
+    ? 'The listener just pressed CATCH THAT, so weight the END of the transcript most heavily — the thing they want is probably the last named or unusual reference.'
+    : 'Surface only things genuinely worth explaining. Returning an empty array is the right answer most of the time.';
+
+  return `You are the engine behind a teletext-style reference service. It listens to a TV programme or a room conversation and puts short explanatory pages on screen.
+
+Below is a raw speech-to-text transcript. It is error-prone: names get mangled, homophones get swapped, and there is no punctuation to trust. Read through the errors where you can.
+
+${focus}
+
+Pick out up to ${mode === 'catch' ? 3 : 2} references a curious listener might want context on — people, places, works (films, books, songs, shows), events, or concepts and jargon. Skip anything an ordinary adult already knows. Skip generic words. Never invent a reference that is not clearly in the text.
+
+Return ONLY a JSON array, no preamble and no markdown fences. Each object:
+{"term": "the corrected, properly spelled name", "kind": "person|place|work|event|concept|thing", "gist": "what it is, max 25 words", "why": "why it matters or why it came up, max 18 words", "confidence": "high|low"}
+
+Set confidence to "low" when the transcript was garbled enough that you are guessing at the name. If nothing is worth a page, return [].
+
+TRANSCRIPT:
+"""${transcript}"""`;
+}
+
+async function ask(transcript, mode){
+  const key = store.get('ambient.key');
+  if (!key){
+    openPanel();
+    showNotice('No API key', 'Paste an Anthropic API key into SETUP and save it, then try again.');
+    return;
+  }
+
+  busy = true;
+  setStatus('Looking it up', 'think');
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: buildPrompt(transcript, mode) }]
+      })
+    });
+
+    if (!res.ok){
+      const detail = await res.text();
+      let msg = `The API returned ${res.status}.`;
+      if (res.status === 401) msg = 'That API key was rejected. Check it in SETUP.';
+      if (res.status === 429) msg = 'Rate limited. Wait a moment, or slow down ambient scanning.';
+      showNotice('Lookup failed', msg);
+      console.error(detail);
+      return;
+    }
+
+    const data = await res.json();
+    const text = (data.content || [])
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join('\n')
+      .replace(/```json|```/g, '')
+      .trim();
+
+    let items;
+    try { items = JSON.parse(text); }
+    catch { console.error('Unparseable reply:', text); return; }
+    if (!Array.isArray(items)) return;
+
+    let added = 0;
+    for (const item of items){
+      if (!item || !item.term) continue;
+      const k = item.term.toLowerCase().trim();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      renderCard(item);
+      added++;
+    }
+
+    if (!added && mode === 'catch'){
+      showNotice('Nothing new there', 'Either it caught nothing worth a page, or you already have it. Try again a few seconds after the next reference.');
+    }
+
+  } catch (err){
+    console.error(err);
+    showNotice('Could not reach the API', 'Check your connection, then press CATCH THAT again.');
+  } finally {
+    busy = false;
+    setStatus(listening ? 'Listening' : 'Off air', listening ? 'live' : null);
+  }
+}
+
+/* ── rendering ────────────────────────────────────────────── */
+function clearEmpty(){ const e = $('empty'); if (e) e.remove(); }
+
+function renderCard(item){
+  clearEmpty();
+  pageNo++;
+  const kind = (item.kind || 'thing').toLowerCase();
+  const colour = KIND_COLOUR[kind] || 'var(--white)';
+
+  const card = document.createElement('article');
+  card.className = 'card';
+  card.style.setProperty('--kc', colour);
+
+  const rows = [];
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.innerHTML = `<span class="pno">P${pageNo}</span><span class="kind">${escapeHtml(kind)}</span>` +
+                   (item.confidence === 'low' ? '<span class="flag">heard poorly</span>' : '');
+  rows.push(meta);
+
+  const h = document.createElement('h2');
+  h.textContent = item.term;
+  rows.push(h);
+
+  if (item.gist){
+    const p = document.createElement('p');
+    p.textContent = item.gist;
+    rows.push(p);
+  }
+  if (item.why){
+    const p = document.createElement('p');
+    p.className = 'why';
+    p.textContent = item.why;
+    rows.push(p);
+  }
+
+  rows.forEach((el, i) => {
+    el.classList.add('line');
+    el.style.animationDelay = (i * 70) + 'ms';
+    card.appendChild(el);
+  });
+
+  feed.prepend(card);
+  card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function showNotice(title, body){
+  clearEmpty();
+  const n = document.createElement('article');
+  n.className = 'card';
+  n.style.setProperty('--kc', 'var(--red)');
+  n.innerHTML = `<div class="meta"><span class="pno">!</span><span class="kind">notice</span></div>
+                 <h2>${escapeHtml(title)}</h2><p class="why">${escapeHtml(body)}</p>`;
+  feed.prepend(n);
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ── ambient loop ─────────────────────────────────────────── */
+function setAmbient(on){
+  ambient = on;
+  $('btnAmbient').classList.toggle('active', on);
+  $('modeText').textContent = on ? 'Ambient mode' : 'Catch mode';
+  clearInterval(ambientTimer);
+  if (on){
+    ambientCursor = buffer.length;
+    ambientTimer = setInterval(() => {
+      if (busy || !listening) return;
+      const text = newAmbientText();
+      if (text.length < AMBIENT_MIN) return;
+      ambientCursor = buffer.length;
+      ask(text, 'ambient');
+    }, AMBIENT_EVERY);
+  }
+}
+
+/* ── panel ────────────────────────────────────────────────── */
+function openPanel(){ $('panel').classList.add('open'); $('key').focus(); }
+
+/* ── wiring ───────────────────────────────────────────────── */
+$('btnListen').addEventListener('click', () => listening ? stopListening() : startListening());
+
+$('btnCatch').addEventListener('click', () => {
+  if (busy) return;
+  const text = textSince(CATCH_WINDOW);
+  if (!text){
+    showNotice('Heard nothing', listening
+      ? 'The mic is on but nothing has been transcribed yet. Move closer to the speaker or turn it up.'
+      : 'Press START first, then catch things as they go past.');
+    return;
+  }
+  ask(text, 'catch');
+});
+
+$('btnAmbient').addEventListener('click', () => setAmbient(!ambient));
+
+$('btnMenu').addEventListener('click', () => $('panel').classList.toggle('open'));
+
+$('btnSave').addEventListener('click', () => {
+  const k = $('key').value.trim();
+  if (k) store.set('ambient.key', k);
+  store.set('ambient.lang', $('lang').value);
+  if (recog) recog.lang = $('lang').value;
+  $('panel').classList.remove('open');
+});
+
+// keyboard: space to catch, without hijacking the text field
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.code === 'Space'){ e.preventDefault(); $('btnCatch').click(); }
+});
+
+/* ── boot ─────────────────────────────────────────────────── */
+(function init(){
+  const savedKey = store.get('ambient.key');
+  const savedLang = store.get('ambient.lang');
+  if (savedKey) $('key').value = savedKey;
+  if (savedLang) $('lang').value = savedLang;
+  if (!savedKey) $('panel').classList.add('open');
+
+  if (!(window.SpeechRecognition || window.webkitSpeechRecognition)){
+    showNotice('Wrong browser', 'Live transcription needs Chrome or Edge, on desktop or Android. Safari and Firefox do not support it yet.');
+  }
+})();
+</script>
+</body>
+</html>
